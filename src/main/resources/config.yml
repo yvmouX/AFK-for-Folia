@@ -45,6 +45,6 @@ afk-reward:
   amount: 10.0           # 每次发放的金额
   max-total: 1000.0      # 单次挂机累计奖励上限（回到游戏后重新计算），-1 表示无上限
   max-daily: -1          # 单日(自然日)累计奖励上限，跨天自动清零，重启不清零，-1 表示无上限
-  msg-reward: "&a[AFK] 挂机奖励 +%amount%（本次已获得 %total%/%max%）"  # %amount%本次发放 %total%本次累计 %max%上限，留空则不提示
-  msg-reward-max: "&e[AFK] 已达到本次挂机的奖励上限。"  # 达到单次上限时的提示，留空则不提示
-  msg-daily-max: "&e[AFK] 已达到今日奖励上限，明天再来吧。"  # 达到单日上限时的提示，留空则不提示
+  msg-reward: "&a[AFK] 挂机奖励 +%amount%（本次 %total%/%max%，今日 %daily%/%daily-max%）"  # 可用变量：%amount%本次发放 %total%本次挂机累计 %max%单次上限 %daily%今日累计 %daily-max%单日上限，留空则不提示
+  msg-reward-max: "&e[AFK] 已达到本次挂机的奖励上限（今日 %daily%/%daily-max%）。"  # 达到单次上限时的提示，支持同上变量，留空则不提示
+  msg-daily-max: "&e[AFK] 已达到今日奖励上限（%daily%/%daily-max%），明天再来吧。"  # 达到单日上限时的提示，支持同上变量，留空则不提示

@@ -211,9 +211,9 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
         rewardAmount   = getConfig().getDouble("afk-reward.amount", 10.0);
         rewardMaxTotal = getConfig().getDouble("afk-reward.max-total", -1);
         rewardMaxDaily = getConfig().getDouble("afk-reward.max-daily", -1);
-        msgReward      = color(getConfig().getString("afk-reward.msg-reward", "&a[AFK] 挂机奖励 +%amount%（本次已获得 %total%/%max%）"));
-        msgRewardMax   = color(getConfig().getString("afk-reward.msg-reward-max", "&e[AFK] 已达到本次挂机的奖励上限。"));
-        msgDailyMax    = color(getConfig().getString("afk-reward.msg-daily-max", "&e[AFK] 已达到今日奖励上限，明天再来吧。"));
+        msgReward      = color(getConfig().getString("afk-reward.msg-reward", "&a[AFK] 挂机奖励 +%amount%（本次 %total%/%max%，今日 %daily%/%daily-max%）"));
+        msgRewardMax   = color(getConfig().getString("afk-reward.msg-reward-max", "&e[AFK] 已达到本次挂机的奖励上限（今日 %daily%/%daily-max%）。"));
+        msgDailyMax    = color(getConfig().getString("afk-reward.msg-daily-max", "&e[AFK] 已达到今日奖励上限（%daily%/%daily-max%），明天再来吧。"));
     }
 
     private String color(String msg) {
@@ -292,16 +292,13 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
                 saveDailyDataAsync();
 
                 if (!msgReward.isEmpty()) {
-                    player.sendMessage(msgReward
-                            .replace("%amount%", formatMoney(amount))
-                            .replace("%total%", formatMoney(total))
-                            .replace("%max%", rewardMaxTotal < 0 ? "∞" : formatMoney(rewardMaxTotal)));
+                    player.sendMessage(applyRewardPlaceholders(msgReward, amount, total, today + amount));
                 }
                 if (rewardMaxTotal >= 0 && total >= rewardMaxTotal && !msgRewardMax.isEmpty()) {
-                    player.sendMessage(msgRewardMax);
+                    player.sendMessage(applyRewardPlaceholders(msgRewardMax, amount, total, today + amount));
                 }
                 if (rewardMaxDaily >= 0 && today + amount >= rewardMaxDaily && !msgDailyMax.isEmpty()) {
-                    player.sendMessage(msgDailyMax);
+                    player.sendMessage(applyRewardPlaceholders(msgDailyMax, amount, total, today + amount));
                 }
             }, null);
         }
@@ -369,6 +366,16 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
     private String formatMoney(double v) {
         if (v == Math.floor(v) && !Double.isInfinite(v)) return String.valueOf((long) v);
         return String.valueOf(v);
+    }
+
+    // 奖励消息统一变量替换：%amount%本次发放 %total%本次挂机累计 %max%单次上限 %daily%今日累计 %daily-max%单日上限
+    private String applyRewardPlaceholders(String msg, double amount, double total, double today) {
+        return msg
+                .replace("%amount%", formatMoney(amount))
+                .replace("%total%", formatMoney(total))
+                .replace("%max%", rewardMaxTotal < 0 ? "∞" : formatMoney(rewardMaxTotal))
+                .replace("%daily%", formatMoney(today))
+                .replace("%daily-max%", rewardMaxDaily < 0 ? "∞" : formatMoney(rewardMaxDaily));
     }
 
     private void sendViewDistance(Player player, int distance) {
