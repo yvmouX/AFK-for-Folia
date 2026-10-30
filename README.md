@@ -29,7 +29,7 @@ Currently implemented features:
  - 自定义消息   - Customized messages
 
 
- - Vault 挂机奖励：可配置发放间隔、金额、单次挂机累计上限和提示消息   - Vault AFK rewards with configurable interval, amount, per-session cap and messages
+ - Vault 挂机奖励：可配置发放间隔、金额、单次挂机累计上限、单日累计上限（跨天清零、重启保留）和提示消息   - Vault AFK rewards with configurable interval, amount, per-session cap, daily cap (resets at midnight, survives restarts) and messages
 
   
 WIKI(To be updated待完善):https://github.com/Tacocat-i/AFK-for-Folia/wiki

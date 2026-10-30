@@ -13,11 +13,15 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.*;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
 import net.milkbowl.vault.economy.Economy;
 import net.milkbowl.vault.economy.EconomyResponse;
 
+import java.io.File;
+import java.io.IOException;
+import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -62,14 +66,20 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
     private int rewardInterval;      // 发放间隔（秒）
     private double rewardAmount;     // 每次发放金额
     private double rewardMaxTotal;   // 单次挂机累计上限（-1 无上限）
-    private String msgReward, msgRewardMax;
+    private double rewardMaxDaily;   // 单日累计上限（-1 无上限）
+    private String msgReward, msgRewardMax, msgDailyMax;
     private Economy economy;         // Vault 经济提供者（懒加载）
-    private final Map<UUID, Double> afkEarned = new ConcurrentHashMap<>();  // 本次挂机已获得的奖励
+    private final Map<UUID, Double> afkEarned = new ConcurrentHashMap<>();   // 本次挂机已获得的奖励
+    private final Map<UUID, Double> dailyEarned = new ConcurrentHashMap<>(); // 今日已获得的奖励
+    private String dailyDay = LocalDate.now().toString();  // dailyEarned 所属日期
+    private File dailyFile;
     private ScheduledTask afkTask, rewardTask;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        dailyFile = new File(getDataFolder(), "daily.yml");
+        loadDailyData();
         loadConfig();
 
         protocolManager = ProtocolLibrary.getProtocolManager();
@@ -200,8 +210,10 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
         rewardInterval = getConfig().getInt("afk-reward.interval", 60);
         rewardAmount   = getConfig().getDouble("afk-reward.amount", 10.0);
         rewardMaxTotal = getConfig().getDouble("afk-reward.max-total", -1);
+        rewardMaxDaily = getConfig().getDouble("afk-reward.max-daily", -1);
         msgReward      = color(getConfig().getString("afk-reward.msg-reward", "&a[AFK] 挂机奖励 +%amount%（本次已获得 %total%/%max%）"));
         msgRewardMax   = color(getConfig().getString("afk-reward.msg-reward-max", "&e[AFK] 已达到本次挂机的奖励上限。"));
+        msgDailyMax    = color(getConfig().getString("afk-reward.msg-daily-max", "&e[AFK] 已达到今日奖励上限，明天再来吧。"));
     }
 
     private String color(String msg) {
@@ -237,19 +249,32 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
 
     private void payAfkPlayers() {
         if (!resolveEconomy()) return;
+        // 跨自然日重置单日累计
+        if (!LocalDate.now().toString().equals(dailyDay)) {
+            dailyDay = LocalDate.now().toString();
+            dailyEarned.clear();
+            saveDailyDataAsync();
+        }
         for (Player player : Bukkit.getOnlinePlayers()) {
             UUID uuid = player.getUniqueId();
             if (!isAFK.getOrDefault(uuid, false)) continue;
+            if (rewardMaxDaily >= 0 && dailyEarned.getOrDefault(uuid, 0.0) >= rewardMaxDaily) continue;
             // 经济操作放到玩家所在区域线程执行（Folia 安全）
             player.getScheduler().run(this, t -> {
                 if (!player.isOnline() || !isAFK.getOrDefault(uuid, false)) return;
                 double earned = afkEarned.getOrDefault(uuid, 0.0);
                 if (rewardMaxTotal >= 0 && earned >= rewardMaxTotal) return;
+                double today = dailyEarned.getOrDefault(uuid, 0.0);
+                if (rewardMaxDaily >= 0 && today >= rewardMaxDaily) return;
 
                 double amount = rewardAmount;
                 if (rewardMaxTotal >= 0 && earned + amount > rewardMaxTotal) {
                     amount = rewardMaxTotal - earned;  // 最后一笔补齐到上限
                 }
+                if (rewardMaxDaily >= 0 && today + amount > rewardMaxDaily) {
+                    amount = Math.min(amount, rewardMaxDaily - today);
+                }
+                if (amount <= 0) return;
                 EconomyResponse resp;
                 try {
                     resp = economy.depositPlayer(player, amount);
@@ -263,6 +288,8 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
                 }
                 double total = earned + amount;
                 afkEarned.put(uuid, total);
+                dailyEarned.put(uuid, today + amount);
+                saveDailyDataAsync();
 
                 if (!msgReward.isEmpty()) {
                     player.sendMessage(msgReward
@@ -273,7 +300,54 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
                 if (rewardMaxTotal >= 0 && total >= rewardMaxTotal && !msgRewardMax.isEmpty()) {
                     player.sendMessage(msgRewardMax);
                 }
+                if (rewardMaxDaily >= 0 && today + amount >= rewardMaxDaily && !msgDailyMax.isEmpty()) {
+                    player.sendMessage(msgDailyMax);
+                }
             }, null);
+        }
+    }
+
+    private void loadDailyData() {
+        if (!dailyFile.exists()) return;
+        YamlConfiguration y = YamlConfiguration.loadConfiguration(dailyFile);
+        if (!LocalDate.now().toString().equals(y.getString("date", ""))) return;  // 数据不是今天的，直接清零
+        org.bukkit.configuration.ConfigurationSection sec = y.getConfigurationSection("earned");
+        if (sec == null) return;
+        for (String key : sec.getKeys(false)) {
+            try {
+                dailyEarned.put(UUID.fromString(key), sec.getDouble(key));
+            } catch (IllegalArgumentException ignored) {
+                // 无效 UUID 行，跳过
+            }
+        }
+    }
+
+    private void saveDailyDataAsync() {
+        YamlConfiguration y = toDailyYaml();
+        Bukkit.getAsyncScheduler().runNow(this, t -> {
+            try {
+                y.save(dailyFile);
+            } catch (IOException ex) {
+                getLogger().warning("保存单日奖励数据失败: " + ex.getMessage());
+            }
+        });
+    }
+
+    private YamlConfiguration toDailyYaml() {
+        YamlConfiguration y = new YamlConfiguration();
+        y.set("date", dailyDay);
+        for (Map.Entry<UUID, Double> e : dailyEarned.entrySet()) {
+            y.set("earned." + e.getKey(), e.getValue());
+        }
+        return y;
+    }
+
+    @Override
+    public void onDisable() {
+        try {
+            toDailyYaml().save(dailyFile);
+        } catch (IOException ex) {
+            getLogger().warning("保存单日奖励数据失败: " + ex.getMessage());
         }
     }
 
