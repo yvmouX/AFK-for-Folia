@@ -37,3 +37,12 @@ msg-afk-self: "&e你挂机了。"
 msg-afk-broadcast: "&7%player% 挂机了。"
 msg-back-self: "&a欢迎回来！"
 msg-back-broadcast: "&7%player% 回来了。"
+
+# Vault 挂机奖励（需要 Vault 和任意经济插件，如 XConomy/EssentialsX）
+afk-reward:
+  enable: false          # 是否启用挂机奖励
+  interval: 60           # 每隔多少秒发放一次
+  amount: 10.0           # 每次发放的金额
+  max-total: 1000.0      # 单次挂机累计奖励上限（回到游戏后重新计算），-1 表示无上限
+  msg-reward: "&a[AFK] 挂机奖励 +%amount%（本次已获得 %total%/%max%）"  # %amount%本次发放 %total%本次累计 %max%上限，留空则不提示
+  msg-reward-max: "&e[AFK] 已达到本次挂机的奖励上限。"  # 达到上限时的提示，留空则不提示

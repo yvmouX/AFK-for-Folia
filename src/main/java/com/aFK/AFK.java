@@ -13,14 +13,19 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.*;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.plugin.RegisteredServiceProvider;
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
+import net.milkbowl.vault.economy.Economy;
+import net.milkbowl.vault.economy.EconomyResponse;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import com.comphenix.protocol.ProtocolLibrary;
 import com.comphenix.protocol.ProtocolManager;
 import com.comphenix.protocol.events.PacketContainer;
 import com.comphenix.protocol.PacketType;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 public class AFK extends JavaPlugin implements Listener, CommandExecutor {
 
@@ -52,6 +57,15 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
     private boolean pfEntityLook;
     private boolean pfEntityMoveLook;
     private boolean pfHeadRot;
+
+    private boolean rewardEnable;
+    private int rewardInterval;      // 发放间隔（秒）
+    private double rewardAmount;     // 每次发放金额
+    private double rewardMaxTotal;   // 单次挂机累计上限（-1 无上限）
+    private String msgReward, msgRewardMax;
+    private Economy economy;         // Vault 经济提供者（懒加载）
+    private final Map<UUID, Double> afkEarned = new ConcurrentHashMap<>();  // 本次挂机已获得的奖励
+    private ScheduledTask afkTask, rewardTask;
 
     @Override
     public void onEnable() {
@@ -136,6 +150,11 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
         }.register();
 
         startAFKCheckTask();
+
+        if (rewardEnable && !resolveEconomy()) {
+            getLogger().warning("已启用挂机奖励(afk-reward.enable)，但未检测到 Vault 或经济插件，奖励功能暂不生效。");
+        }
+        startRewardTask();
     }
 
     public void loadConfig() {
@@ -176,6 +195,13 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
         msgAfkBroadcast = color(getConfig().getString("msg-afk-broadcast", "&7%player% 挂机了。"));
         msgBackSelf = color(getConfig().getString("msg-back-self", "&a欢迎回来！"));
         msgBackBroadcast = color(getConfig().getString("msg-back-broadcast", "&7%player% 回来了。"));
+
+        rewardEnable   = getConfig().getBoolean("afk-reward.enable", false);
+        rewardInterval = getConfig().getInt("afk-reward.interval", 60);
+        rewardAmount   = getConfig().getDouble("afk-reward.amount", 10.0);
+        rewardMaxTotal = getConfig().getDouble("afk-reward.max-total", -1);
+        msgReward      = color(getConfig().getString("afk-reward.msg-reward", "&a[AFK] 挂机奖励 +%amount%（本次已获得 %total%/%max%）"));
+        msgRewardMax   = color(getConfig().getString("afk-reward.msg-reward-max", "&e[AFK] 已达到本次挂机的奖励上限。"));
     }
 
     private String color(String msg) {
@@ -183,7 +209,10 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
     }
 
     private void startAFKCheckTask() {
-        Bukkit.getAsyncScheduler().runAtFixedRate(this, task -> {
+        if (afkTask != null) {
+            afkTask.cancel();  // 防止 /afkreload 后重复叠加任务
+        }
+        afkTask = Bukkit.getAsyncScheduler().runAtFixedRate(this, task -> {
             long now = System.currentTimeMillis();
             for (Player player : Bukkit.getOnlinePlayers()) {
                 UUID uuid = player.getUniqueId();
@@ -194,6 +223,78 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
                 }
             }
         }, 0, 5, TimeUnit.SECONDS);
+    }
+
+    private void startRewardTask() {
+        if (rewardTask != null) {
+            rewardTask.cancel();
+            rewardTask = null;
+        }
+        if (!rewardEnable || rewardInterval < 1) return;
+        long period = rewardInterval * 20L;  // 全局调度器以 tick 为单位
+        rewardTask = Bukkit.getGlobalRegionScheduler().runAtFixedRate(this, task -> payAfkPlayers(), period, period);
+    }
+
+    private void payAfkPlayers() {
+        if (!resolveEconomy()) return;
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            UUID uuid = player.getUniqueId();
+            if (!isAFK.getOrDefault(uuid, false)) continue;
+            // 经济操作放到玩家所在区域线程执行（Folia 安全）
+            player.getScheduler().run(this, t -> {
+                if (!player.isOnline() || !isAFK.getOrDefault(uuid, false)) return;
+                double earned = afkEarned.getOrDefault(uuid, 0.0);
+                if (rewardMaxTotal >= 0 && earned >= rewardMaxTotal) return;
+
+                double amount = rewardAmount;
+                if (rewardMaxTotal >= 0 && earned + amount > rewardMaxTotal) {
+                    amount = rewardMaxTotal - earned;  // 最后一笔补齐到上限
+                }
+                EconomyResponse resp;
+                try {
+                    resp = economy.depositPlayer(player, amount);
+                } catch (Throwable ex) {
+                    getLogger().warning("发放挂机奖励时出现异常(" + player.getName() + "): " + ex);
+                    return;
+                }
+                if (!resp.transactionSuccess()) {
+                    getLogger().warning("发放挂机奖励失败(" + player.getName() + "): " + resp.errorMessage);
+                    return;
+                }
+                double total = earned + amount;
+                afkEarned.put(uuid, total);
+
+                if (!msgReward.isEmpty()) {
+                    player.sendMessage(msgReward
+                            .replace("%amount%", formatMoney(amount))
+                            .replace("%total%", formatMoney(total))
+                            .replace("%max%", rewardMaxTotal < 0 ? "∞" : formatMoney(rewardMaxTotal)));
+                }
+                if (rewardMaxTotal >= 0 && total >= rewardMaxTotal && !msgRewardMax.isEmpty()) {
+                    player.sendMessage(msgRewardMax);
+                }
+            }, null);
+        }
+    }
+
+    private boolean resolveEconomy() {
+        if (economy != null) return true;
+        try {
+            if (Bukkit.getPluginManager().getPlugin("Vault") == null) return false;
+            RegisteredServiceProvider<Economy> rsp = Bukkit.getServicesManager().getRegistration(Economy.class);
+            if (rsp == null) return false;
+            economy = rsp.getProvider();
+        } catch (Throwable t) {
+            // Vault 存在但启用失败（如旧版在不支持 Folia）时类加载器已关闭
+            return false;
+        }
+        getLogger().info("挂机奖励将使用 Vault 经济提供者: " + economy.getName());
+        return true;
+    }
+
+    private String formatMoney(double v) {
+        if (v == Math.floor(v) && !Double.isInfinite(v)) return String.valueOf((long) v);
+        return String.valueOf(v);
     }
 
     private void sendViewDistance(Player player, int distance) {
@@ -211,6 +312,9 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
         UUID uuid = player.getUniqueId();
         boolean wasAfk = isAFK.getOrDefault(uuid, false);
         isAFK.put(uuid, afk);
+        if (afk && !wasAfk) {
+            afkEarned.remove(uuid);  // 新一轮挂机，重新计算奖励累计
+        }
 
         if (viewDistanceEnable) {
             if (afk && !wasAfk) {
@@ -289,6 +393,7 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
         UUID uuid = event.getPlayer().getUniqueId();
         lastActivity.remove(uuid);
         isAFK.remove(uuid);
+        afkEarned.remove(uuid);
     }
 
     @Override
@@ -296,6 +401,8 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
         if (label.equalsIgnoreCase("afkreload")) {
             if (sender.hasPermission("afk.command.reload")) {
                 loadConfig();
+                startAFKCheckTask();
+                startRewardTask();
                 sender.sendMessage(ChatColor.GREEN + "AFK configuration reloaded.");
             } else {
                 sender.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
