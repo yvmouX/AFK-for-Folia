@@ -331,11 +331,18 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
         if (afk) {
             if (afkGodMode) player.setInvulnerable(true);
             player.sendMessage(msgAfkSelf);
-            Bukkit.broadcastMessage(msgAfkBroadcast.replace("%player%", player.getName()));
+            broadcast(msgAfkBroadcast.replace("%player%", player.getName()));
         } else {
             if (afkGodMode) player.setInvulnerable(false);
             player.sendMessage(msgBackSelf);
-            Bukkit.broadcastMessage(msgBackBroadcast.replace("%player%", player.getName()));
+            broadcast(msgBackBroadcast.replace("%player%", player.getName()));
+        }
+    }
+
+    // Folia 上 Bukkit.broadcastMessage 静默无效，改为逐个发送（sendMessage 线程安全）
+    private void broadcast(String msg) {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            p.sendMessage(msg);
         }
     }
 
@@ -398,7 +405,8 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (label.equalsIgnoreCase("afkreload")) {
+        // 用 command.getName() 而不是 label：/afk:afkreload 这种带命名空间的调用 label 会带前缀
+        if (command.getName().equalsIgnoreCase("afkreload")) {
             if (sender.hasPermission("afk.command.reload")) {
                 loadConfig();
                 startAFKCheckTask();
@@ -410,7 +418,7 @@ public class AFK extends JavaPlugin implements Listener, CommandExecutor {
             return true;
         }
 
-        if (label.equalsIgnoreCase("afk")) {
+        if (command.getName().equalsIgnoreCase("afk")) {
             if (sender instanceof Player) {
                 Player player = (Player) sender;
 
