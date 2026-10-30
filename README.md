@@ -1,7 +1,9 @@
 If you won't use ESS but want an AFK plugin, come for it.  
 如果您不使用 ESS，但想要一个 AFK 插件，那就来试试吧。  
 
-Original Support for : Folia 1.21.4
+Original Support for : Folia/Paper 1.21.4 - 26.3 (MC 26.3 requires Java 25; plugin needs ProtocolLib 5.4.0+ on 26.x)
+
+Build with JDK 25 (paper-api 26.3 targets Java 25, but the jar is compiled with `--release 21` so it still runs on older servers).
 
 Depend Plugin:  
 前置依赖：  
